@@ -1,0 +1,192 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CI/CD Pipeline — ai-tools-api
+#
+# Triggers:
+#   • Push to main (full pipeline → build → push → deploy + email)
+#   • Pull requests to main (lint + test only — no push, no deploy)
+#
+# Required GitHub Secrets:
+#   DOCKERHUB_USERNAME   — your Docker Hub username
+#   DOCKERHUB_TOKEN      — Docker Hub access token (not password)
+#   DEPLOY_HOST          — SSH target, e.g. user@your.server.com
+#   DEPLOY_SSH_KEY       — private key matching an authorized_keys entry on the server
+#   MAIL_USERNAME        — Gmail address (must have an App Password set)
+#   MAIL_PASSWORD        — Gmail App Password (16-char, from myaccount.google.com/apppasswords)
+#   MAIL_TO              — recipient address for deploy notifications
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/ai-tools-api
+  CONTAINER_NAME: ai-tools-api
+  APP_PORT: 3000
+
+jobs:
+  # ── Job 1: Lint & Test ────────────────────────────────────────────────────
+  test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install all dependencies
+        run: npm ci
+
+      - name: Run tests with coverage
+        run: npm run test:coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
+
+  # ── Job 2: Build & Push Docker image ─────────────────────────────────────
+  build:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+    # Only run on pushes to main (not on PRs)
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract Docker metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push (multi-stage; tests run inside)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Cache layers between runs using GitHub Actions cache
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Job 3: Deploy to Server ───────────────────────────────────────────────
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ubuntu
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            echo "=== Pulling latest image ==="
+            docker pull ${{ env.IMAGE_NAME }}:latest
+
+            echo "=== Stopping old container (if any) ==="
+            docker stop ${{ env.CONTAINER_NAME }} 2>/dev/null || true
+            docker rm   ${{ env.CONTAINER_NAME }} 2>/dev/null || true
+
+            echo "=== Starting new container ==="
+            docker run -d \
+              --name ${{ env.CONTAINER_NAME }} \
+              --restart unless-stopped \
+              -p ${{ env.APP_PORT }}:${{ env.APP_PORT }} \
+              -e NODE_ENV=production \
+              ${{ env.IMAGE_NAME }}:latest
+
+            echo "=== Pruning dangling images ==="
+            docker image prune -f
+
+            echo "=== Health check ==="
+            sleep 5
+            curl -sf http://localhost:${{ env.APP_PORT }}/health \
+              && echo "Health check passed" \
+              || (echo "Health check failed" && exit 1)
+
+  # ── Job 4: Email Notification ─────────────────────────────────────────────
+  notify:
+    name: Send Email Notification
+    runs-on: ubuntu-latest
+    needs: [build, deploy]
+    # Always run so we also get failure emails
+    if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Determine pipeline status
+        id: status
+        run: |
+          if [[ "${{ needs.deploy.result }}" == "success" ]]; then
+            echo "emoji=✅"  >> "$GITHUB_OUTPUT"
+            echo "label=SUCCESS" >> "$GITHUB_OUTPUT"
+          else
+            echo "emoji=❌"  >> "$GITHUB_OUTPUT"
+            echo "label=FAILED"  >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Send email via Gmail SMTP
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          secure: false
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          to: ${{ secrets.MAIL_TO }}
+          from: "AI Tools API CI/CD <${{ secrets.MAIL_USERNAME }}>"
+          subject: >
+            ${{ steps.status.outputs.emoji }} Deploy ${{ steps.status.outputs.label }}
+            — ai-tools-api @ ${{ github.sha }}
+          html_body: |
+            <h2>${{ steps.status.outputs.emoji }} Deployment ${{ steps.status.outputs.label }}</h2>
+            <table cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:monospace">
+              <tr><td><b>Repo</b></td><td>${{ github.repository }}</td></tr>
+              <tr><td><b>Branch</b></td><td>${{ github.ref_name }}</td></tr>
+              <tr><td><b>Commit</b></td><td>${{ github.sha }}</td></tr>
+              <tr><td><b>Author</b></td><td>${{ github.actor }}</td></tr>
+              <tr><td><b>Message</b></td><td>${{ github.event.head_commit.message }}</td></tr>
+              <tr><td><b>Image</b></td><td>${{ env.IMAGE_NAME }}:latest</td></tr>
+              <tr><td><b>Test</b></td><td>${{ needs.build.result }}</td></tr>
+              <tr><td><b>Deploy</b></td><td>${{ needs.deploy.result }}</td></tr>
+            </table>
+            <p>
+              <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}">
+                View full workflow run →
+              </a>
+            </p>
