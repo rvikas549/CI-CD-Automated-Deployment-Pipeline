@@ -1,6 +1,6 @@
 const app = require("./app");
 
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 3000;
 
 const server = app.listen(PORT, () => {
   console.log(`[server] AI Tools API running on port ${PORT}`);
