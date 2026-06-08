@@ -520,4 +520,9 @@ Job 4 — Email always runs regardless of whether the deploy passed or failed. I
 Docker Hub is just a storage registry — like GitHub but for Docker images. No ports, no running code. It just holds your images so EC2 can pull them.
 EC2 is where your app actually runs. It's an Amazon Linux 2023 server running one Docker container on port 3000, accessible at http://YOUR_EC2_IP:3000/api/tools.
 
+
+<img width="1280" height="832" alt="Screenshot 2026-06-08 at 1 03 09 PM" src="https://github.com/user-attachments/assets/75ae87f8-2d38-4e89-8d10-4d99eeb2a28f" />
+
+<img width="664" height="486" alt="Screenshot 2026-06-08 at 1 06 50 PM" src="https://github.com/user-attachments/assets/52a604b9-6a3d-4d67-8200-07324b72e2b3" />
+
 ##Thank You 🩷
