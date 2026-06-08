@@ -506,3 +506,18 @@ Features:
 ## License
 
 MIT
+
+
+## How Everything Connects — Explained Simply
+The Big Picture
+You write code on your Mac → push to GitHub → everything else happens automatically.
+What Each Part Does
+GitHub Actions is the brain. It watches your repo and runs 4 jobs in sequence every time you push to main.
+Job 1 — Test is the quality gate. It installs your Node.js dependencies and runs all 8 Jest tests. If even one test fails, the entire pipeline stops here. Nothing broken ever moves forward.
+Job 2 — Build & Push packages your app into a Docker image using a 3-stage Dockerfile. Stage 1 installs production deps, Stage 2 runs tests inside Docker as a second check, Stage 3 creates the final lean image with a non-root user and no dev tools. That image gets pushed to Docker Hub tagged as both latest and sha-<commit-hash> so you can always roll back to any version.
+Job 3 — Deploy SSHes into your EC2 instance, pulls the new image from Docker Hub, stops the old container, starts the new one, and then curls /health to confirm the app is actually alive. If the health check fails, the job fails and you know immediately.
+Job 4 — Email always runs regardless of whether the deploy passed or failed. It sends you an HTML email with the full status, commit message, author, and a link to the Actions run.
+Docker Hub is just a storage registry — like GitHub but for Docker images. No ports, no running code. It just holds your images so EC2 can pull them.
+EC2 is where your app actually runs. It's an Amazon Linux 2023 server running one Docker container on port 3000, accessible at http://YOUR_EC2_IP:3000/api/tools.
+
+##Thank You 🩷
